@@ -63,6 +63,10 @@ var RiakUtil = function() {
     },
     parseSiblings: function(vclock, text) {
       var c = text.split('\n');
+      for (var i = 0; i < c.length; i++) {
+        if (c[i].charAt(c[i].length-1) == '\r')
+          c[i] = c[i].slice(0, -1)
+      }
       c = c.slice(1).slice(0, c.length - 2);
       var separator = c[0];
       c = c.slice(1);
