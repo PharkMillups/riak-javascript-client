@@ -1,4 +1,4 @@
-
+/* -*- mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil -*- */
 /**
    This file is provided to you under the Apache License,
    Version 2.0 (the "License"); you may not use this file
@@ -61,39 +61,70 @@ var RiakUtil = function() {
     wasSuccessful: function(req) {
       return req.status > 199 && req.status < 300;
     },
-    parseSiblings: function(vclock, text) {
-      var c = text.split('\n');
-      for (var i = 0; i < c.length; i++) {
-        if (c[i].charAt(c[i].length-1) == '\r')
-          c[i] = c[i].slice(0, -1)
+    /**
+     * Create a modified accepts object
+     */
+    multipart_accepts: function() {
+      var current = jQuery.ajaxSettings.accepts;
+      var accepts = {};
+      for (prop in current) {
+        accepts[prop] = current[prop];
       }
-      c = c.slice(1).slice(0, c.length - 2);
-      var separator = c[0];
-      c = c.slice(1);
+      accepts.multipart = "multipart/mixed;q=1.1";
+      return accepts;
+    },
+    get_boundary: function(contentType) {
+      var idx = contentType.indexOf("boundary=");
+      if(idx < 0)
+        throw('Could not locate boundary for multipart/mixed');
+      return contentType.substr(idx+9);
+    },
+    parseSiblings: function(contentType, text) {
+      var prefixAt = function(idx, prefix) {
+        return (text.substr(idx, prefix.length) === prefix);
+      };
+      var nextChunk = function(lookFor, start_idx) {
+        var idx = text.indexOf(lookFor, start_idx);
+        if (idx < 0)
+          throw("Could not find next chunk");
+        return idx;
+      };
+
+      var boundary = RiakUtil.get_boundary(contentType);
+      var nextBoundary = "--"+boundary+"\r\n";
+      var idx = nextChunk(nextBoundary, 0) + nextBoundary.length; // skip preamble
+      var last_idx;
       var siblings = [];
       var sibling = {};
-      for (var i = 0; i < c.length; i++) {
-        if (c[i] === '') {
-          continue;
-        }
-	if (c[i].substr(0, separator.length) == separator) {
-	  sibling.vclock = vclock;
-	  siblings.push(sibling);
-  	  sibling = {};
-        }
-	else {
-	  if (c[i].indexOf(':') > -1) {
-	    var bits = c[i].split(': ');
-	    if (bits[0] === 'Content-Type') {
-	      sibling.contentType = bits[1];
-	    }
-	    else if (bits[0] === 'Link') {
-	      sibling.linkHeader = bits[1];
-	    }
-	  }
-	  else {
-	    sibling.body = c[i];
+      nextBoundary = "\r\n--"+boundary;
+      for(;;) {
+        // If a header
+        if (prefixAt(idx, "\r\n") != true) {
+          last_idx = idx;
+          idx = nextChunk(": ", last_idx);
+	  var hdr = text.substring(last_idx, idx);
+          last_idx = idx + 2;
+          idx = nextChunk("\r\n", last_idx);
+          var val = text.substring(last_idx, idx);
+          if (hdr === 'Content-Type') {
+            sibling.contentType = val;
+          } else if (hdr === 'Link') {
+            sibling.linkHeader = val;
           }
+          idx += 2;          
+	} else { // Idx points to \r\n at end of headers, grab the body
+          last_idx = idx + 2;
+          idx = nextChunk(nextBoundary, last_idx + 2)
+          sibling.body = text.substring(last_idx, idx);
+          siblings.push(sibling);
+          sibling = {};
+          idx += nextBoundary.length;
+          if (prefixAt(idx, "--\r\n")) // --boundary-- is the end of 
+            break; 
+          else if (prefixAt(idx, "\r\n"))
+            idx += 2;
+          else
+            throw("Expecting boundary or end of multipart/mixed");
         }
       }
       return siblings;
@@ -281,8 +312,8 @@ RiakObject.fromRequest = function(bucket, key, client, req) {
   return retval;
 };
 
-RiakObject.fromMultipart = function(bucket, key, client, multipartChunk) {
-  var retval = new RiakObject(bucket, key, client, multipartChunk.body, multipartChunk.contentType, multipartChunk.vclock);
+RiakObject.fromMultipart = function(bucket, key, client, vclock, multipartChunk) {
+  var retval = new RiakObject(bucket, key, client, multipartChunk.body, multipartChunk.contentType, vclock);
   retval.setLinks(multipartChunk.linkHeader);
   return retval;
 }
@@ -435,8 +466,9 @@ RiakObject.prototype.remove = function(callback) {
   var object = this;
   jQuery.ajax({url: this.client._buildPath('DELETE', this.bucket, this.key),
 	       type: 'DELETE',
+               accepts: RiakUtil.multipart_accepts(),
+               dataType: 'multipart',
 	       beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', object.client.clientId);
-					   req.setRequestHeader('Accept', 'multipart/mixed,*/*');
 					   if (object.vclock !== undefined && object.vclock !== null) {
 					     req.setRequestHeader('X-Riak-Vclock', object.vclock);
 					   }
@@ -485,9 +517,9 @@ RiakObject.prototype.store = function(callback) {
 	  type: 'PUT',
 	  data: objectData,
 	  contentType: this.contentType,
-	  dataType: 'text',
+          accepts: RiakUtil.multipart_accepts(),
+          dataType: 'multipart',
 	  beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', object.client.clientId);
-				      req.setRequestHeader('Accept', 'multipart/mixed,*/*');
 				      if (object.vclock !== undefined && object.vclock !== null) {
 					req.setRequestHeader('X-Riak-Vclock', object.vclock);
 				      }
@@ -510,10 +542,11 @@ RiakObject.prototype._store = function(req, callback) {
     }
     /* Uh-oh, we've got siblings! */
     else if (req.status == 300) {
-      var siblingData = RiakUtil.parseSiblings(req.getResponseHeader('X-Riak-Vclock'),
+      var siblingData = RiakUtil.parseSiblings(req.getResponseHeader('Content-Type'),
 					       req.responseText);
+      var vclock = req.getResponseHeader('X-Riak-Vclock');
       var thisObject = this;
-      var siblings = siblingData.map(function(sd) { return RiakObject.fromMultipart(thisObject.bucket, thisObject.key, thisObject.client, sd); });
+      var siblings = siblingData.map(function(sd) { return RiakObject.fromMultipart(thisObject.bucket, thisObject.key, thisObject.client, vclock, sd); });
       callback('siblings', siblings, req);
     }
     else {
@@ -651,8 +684,11 @@ RiakBucket.prototype.get = function(key, callback) {
   var bucket = this;
   jQuery.ajax({url: this.client._buildPath('GET', this.name, key),
 	  type: 'GET',
-	  dataType: 'text',
-	  beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId); },
+          accepts: RiakUtil.multipart_accepts(),
+          dataType: 'multipart',
+	  beforeSend: function(req) {
+              req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId);
+          },
 	  complete: function(req, statusText) { bucket._handleGetObject(key, req, callback, false); } });
 };
 
@@ -670,11 +706,43 @@ RiakBucket.prototype.get_or_new = function(key, callback) {
   var bucket = this;
   jQuery.ajax({url: this.client._buildPath('GET', this.name, key),
 	  type: 'GET',
-	  dataType: 'text',
-	  beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId); },
+          accepts: RiakUtil.multipart_accepts(),
+          dataType: 'multipart',
+	  beforeSend: function(req) {
+              req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId);
+          },
 	  complete: function(req, statusText) { bucket._handleGetObject(key, req, callback, true); } });
 };
 
+/**
+ * Deletes an object from a Riak bucket
+ * @param key - Riak bucket key
+ * @param callback - Function to call when op complete
+ *
+ * callback - function(success, request)
+ * @param success - Boolean flag indicating successful removal
+ * @param request - XMLHTTPRequest object
+ */
+RiakBucket.prototype.remove = function(key, callback) {
+  var bucket = this;
+  jQuery.ajax({url: this.client._buildPath('DELETE', bucket.name, key),
+	       type: 'DELETE',
+               accepts: RiakUtil.multipart_accepts(),
+               dataType: 'multipart',
+	       beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId);
+					   if (bucket.vclock !== undefined && bucket.vclock !== null) {
+					     req.setRequestHeader('X-Riak-Vclock', bucket.vclock);
+					   }
+					 },
+	       complete: function(req, statusText) { if (callback !== undefined) {
+						      if (RiakUtil.wasSuccessful(req)) {
+							callback(true, req);
+						       }
+						       else {
+							 callback(false, req);
+						       }
+						     } }});
+};
 
 /** Start RiakBucket internals **/
 
@@ -696,15 +764,32 @@ RiakBucket.prototype._handleGetObject = function(key, req, callback, createEmpty
   if (req.readyState != 4) {
     return;
   }
+  var status = 'failed';
   var object = null;
   if (callback !== null && callback !== undefined) {
     if (req.status == 200) {
+      status = 'ok';
       object = RiakObject.fromRequest(this.name, key, this.client, req);
     }
     else if ((req.status == 0 || req.status == 404) && createEmpty === true) {
+      status = 'ok';
       object = new RiakObject(this.name, key, this.client);
     }
-    callback('ok', object, req);
+    /* Uh-oh, we've got siblings! */
+    else if (req.status == 300) {
+      var siblingData = RiakUtil.parseSiblings(req.getResponseHeader('Content-Type'),
+					       req.responseText);
+      var vclock = req.getResponseHeader('X-Riak-Vclock');
+      var thisBucket = this;
+      var siblings = siblingData.map(function(sd) { 
+          return RiakObject.fromMultipart(thisBucket.name, key, 
+                                          thisBucket.client, vclock, sd); });
+      status = 'siblings'
+      object = siblings;
+    } else {
+        console.debug("dropped through on " + req.status.toString());
+    }
+    callback(status, object, req);
   }
 };
 
@@ -754,7 +839,9 @@ RiakClient.prototype.bucket = function(bucket, callback) {
 	  type: 'GET',
 	  contentType: 'application/json',
 	  dataType: 'text',
-	  beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', this.clientId); },
+	  beforeSend: function(req) { 
+              req.setRequestHeader('X-Riak-ClientId', this.clientId);
+          },
 	  complete: function(req, statusText) { client._handleGetBucket(bucket, req, callback, false); } });
 };
 

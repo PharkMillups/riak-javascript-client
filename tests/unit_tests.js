@@ -54,15 +54,15 @@ function storeObject(test) {
 function lookupMissingObject() {
   stop();
   setupObject(false, function(status, object, req) {
-		ok(status === 'failed', 'Failed status for missing object');
-		ok(object == null, "Nonexistent object returns null");
+		equals(status, 'failed', 'Failed status for missing object');
+		equals(object, null, "Nonexistent object returns null");
 		start(); } );
 };
 
 function createMissingObject() {
   stop();
   setupObject(true, function(status, object, req) {
-		ok(status === 'ok', "'ok' status for object creation");
+                equals(status, 'ok', "'ok' status for object creation");
 		ok(object, "Nonexistent object created");
 		start(); } );
 };
@@ -107,28 +107,59 @@ function deleteObject() {
 
 function resolveSiblings() {
   stop();
-  setupSiblingBucket(function(bucket, req) {
-		bucket.allowsMultiples(true);
-		bucket.store(function(newBucket, req) {
-			       newBucket.get_or_new('td10', function(status, object, req) {
-						      ok(status === 'ok', "'ok' status for object creation");
-						      object.contentType = 'text/plain';
-						      object.body = 'Hello';
-						      object.store(function(status, newObject, req) {
-								     ok(status === 'ok', "'ok' status for object store");
-								     object.vclock = null;
-								     object.body = 'Goodbye';
-								     object.store(function(status, siblings, req) {
-										    ok(status === 'siblings', "Status reflects sibling creation");
-										    equals(siblings.length, 2, "2 siblings found");
-										    siblings[0].store(function(status, finalObj, req) {
-													ok(status === 'ok', 'Final sibling stored');
-													equals(finalObj.body, siblings[0].body, "Correct sibling stored");
-													finalObj.client.bucket(TEST_BUCKET, function(bucket, req) {
-																 bucket.allowsMultiples(false);
-																 bucket.store();
-																 start(); } ); } ); } ); } ); } ); } ); } );
-};
+  setupSiblingBucket(
+    function(bucket1, req) {
+      bucket1.remove('td10', function(del_success, del_req) {
+        bucket1.get_or_new('td10', 
+          function(status, object, req) {
+            ok(status === 'ok', "'ok' status for object creation");
+            object.contentType = 'text/plain';
+            object.body = 'Hello';
+            object.store(
+              function(status, newObject, req) {
+                equals(status, 'ok', "Store(1) status reflects no sibling");
+                bucket1.allowsMultiples(true);
+                bucket1.store(
+                  function(multBucket, req) {
+                    // Create a new bucket object with a new clientid
+                    setupSiblingBucket(
+                      function(multBucket2, req2) {
+                      multBucket2.get_or_new('td10', 
+                          function(status2, object2, req) {
+                            ok(status2 === 'ok', "'ok' status for get after first put");
+                            object2.vclock = null;
+                            object2.body = 'Goodbye';
+                            object2.store(
+                              function(status3, siblings, req) {
+                                equals(status3, 'siblings', "Store(2) status reflects sibling creation");
+                                equals(siblings.length, 2, "2 siblings returned by store(2)");
+                                multBucket2.get_or_new('td10', 
+                                  function(status4, get_siblings, req) {
+                                    equals(status4, 'siblings', "Get status reflects sibling creation");
+                                    equals(get_siblings.length, 2, "2 siblings returned by get_or_new()");
+                                    siblings[0].store(
+                                      function(status5, finalObj, req) {
+                                        equals(status5, 'ok', 'Final sibling stored');
+                                        equals(finalObj.body, siblings[0].body, "Correct sibling stored");
+		                          finalObj.client.bucket(TEST_BUCKET,
+                                          function(bucket, req) {
+		                                        bucket1.allowsMultiples(false);
+		                                        bucket1.store(
+                                              function(status, object, req) { 
+		                                            start();
+                                              });
+                                          });
+                                      });
+                                  });
+                              });
+                          });
+                      });
+                  });
+            });
+        });
+      });
+    });
+}; 
 
 function storeLink() {
   stop();
@@ -293,8 +324,9 @@ function runTests() {
   test("Store", 3, storeMissingObject);
   test("Create", 2, createMissingObject);
   test("Update", 4, updateObject);
-  test("Siblings", resolveSiblings);
+  test("Siblings", 9, resolveSiblings);
   test("Delete", 2, deleteObject);
+  test("Get Missing", 2, lookupMissingObject);
 
   module("Links");
   test("Create", 2, createMissingObject);
