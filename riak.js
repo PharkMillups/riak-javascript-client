@@ -222,7 +222,20 @@ RiakMapper.prototype.run = function(timeout, callback) {
 /** Start RiakMapper internals **/
 RiakMapper.prototype._buildPhase = function(starter, options) {
   if (typeof options.source === 'function') {
-      options.source = options.source.toString();
+      source = options.source;
+      try
+      {
+        /* Create a string with minimal padding - JSON.parse
+         * does not like embedded newlines in strings
+         * and function.toString() on FireFox (on 3.6.3) generates
+         * a string with embedded newlines.
+         */
+        options.source = source.toString(-1);
+      }
+      catch (e)
+      {
+        options.source = source.toString();
+      }
   }
   if ((starter.map === null ||
        starter.reduce === null) && (options.language === null || options.language === undefined)) {
@@ -667,7 +680,9 @@ RiakBucket.prototype.store = function(callback) {
 	  data: JSON.stringify(currentProps),
 	  contentType: 'application/json',
 	  dataType: 'text',
-	  beforeSend: function(req) { req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId); },
+	  beforeSend: function(req) { 
+              req.setRequestHeader('X-Riak-ClientId', bucket.client.clientId);
+          },
 	  complete: function(req, statusText) { bucket._store(req, callback); } });
 };
 
@@ -771,9 +786,13 @@ RiakBucket.prototype._handleGetObject = function(key, req, callback, createEmpty
       status = 'ok';
       object = RiakObject.fromRequest(this.name, key, this.client, req);
     }
-    else if ((req.status == 0 || req.status == 404) && createEmpty === true) {
-      status = 'ok';
-      object = new RiakObject(this.name, key, this.client);
+    else if ((req.status == 0 || req.status == 404))
+    {
+      if (createEmpty === true) {
+        status = 'ok';
+        object = new RiakObject(this.name, key, this.client);
+      }
+      /* must not create empty return failed/null */
     }
     /* Uh-oh, we've got siblings! */
     else if (req.status == 300) {
@@ -786,8 +805,6 @@ RiakBucket.prototype._handleGetObject = function(key, req, callback, createEmpty
                                           thisBucket.client, vclock, sd); });
       status = 'siblings'
       object = siblings;
-    } else {
-        console.debug("dropped through on " + req.status.toString());
     }
     callback(status, object, req);
   }
@@ -861,15 +878,22 @@ RiakClient.prototype._handleGetBucket = function(bucketName, req, callback, crea
 
 RiakClient.prototype._buildPath = function(method, bucket, key) {
   var path = this.baseUrl + bucket;
+  /* Reluctantly adding a cache breaker to each request.  FireFox
+  ** sometimes caches XHR responses which triggers failures in the
+  ** unit tests (and presumably real code).  See 'bypassing the cache'
+  ** in https://developer-stage.mozilla.org/En/Using_XMLHttpRequest
+  */
+  var cache_breaker = Math.floor(Math.random() * 4294967296).toString();
   if (key !== undefined) {
-    path = path + '/' + key;
+    path = path + '/' + key + "?" + cache_breaker;
     if (method === 'PUT') {
-      path = path + '?returnbody=true';
+      path = path + '&returnbody=true';
     }
   }
   else {
+    path = path + "?" + cache_breaker;
     if (method === 'GET') {
-      path = path + '?keys=false';
+      path = path + '&keys=false';
     }
   }
   return path;

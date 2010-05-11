@@ -207,11 +207,11 @@ function updateNValue() {
 		var old = bucket.nValue();
 		var newValue = old + 1;
 		bucket.nValue(newValue);
-		bucket.store(function(nb, req) {
+ 		bucket.store(function(nb, req) {
 			       equals(nb.nValue(), newValue, "N-Value updated");
 		               nb.nValue(old);
-		               nb.store(function(b, req) {
-					  equals(b.nValue(), old);
+ 		               nb.store(function(b, req) {
+				          equals(b.nValue(), old, "N-Value reset");
 					  start(); } ); } ); } );
 }
 
@@ -267,6 +267,7 @@ function objectMap() {
 				      obj.map({language: 'javascript',
 					       source: function(obj)  { return Riak.mapValuesJson(obj); },
 					       keep: true}).run(function(flag, results, req) {
+
 								  ok(flag, 'Job ran successfully');
 								  ok(results !== null, 'Map results not null');
 								  equals(results.length, 1, 'Map results contain data');
@@ -311,9 +312,9 @@ function badMap() {
 				       source: function(value) { return [JSON.parse(value)]; },
 				       keep: true}).run(function(flag, results, req) {
 							  ok(!flag, 'Job failed');
-							  ok(results.error !== null, 'Error returned from server');
-							  ok(results.error.lineno > 0, 'Line number given');
-							  ok(results.error.message.length > 0, 'Error message given');
+							  ok(results && results.error && results.error !== null, 'Error returned from server');
+							  ok(results && results.error && results.error.lineno > 0, 'Line number given');
+							  ok(results && results.error && results.error.message && results.error.message.length > 0, 'Error message given');
 							  start(); } ); } );
 
 }
