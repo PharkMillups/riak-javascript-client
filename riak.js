@@ -79,6 +79,17 @@ var RiakUtil = function() {
         throw('Could not locate boundary for multipart/mixed');
       return contentType.substr(idx+9);
     },
+    /**
+     * Parse a 300 request into siblings.  This handles embedded
+     * new lines and control characters.  Unfortunately Firefox
+     * seems to trim embedded \000 in the XHR response.  Beware
+     * for binary data (images etc) you may need to set allow_mult
+     * false for the bucket until an alternative is found.
+     *
+     * @param contentType content type header with boundary information
+     * @param text body of 300 response to be split
+     * @return true if status is 2xx, false otherwise
+     */
     parseSiblings: function(contentType, text) {
       var prefixAt = function(idx, prefix) {
         return (text.substr(idx, prefix.length) === prefix);
@@ -367,16 +378,18 @@ RiakObject.prototype.link = function(options) {
  */
 RiakObject.prototype.setLinks = function(linkHeader) {
   var parsedLinks = new Array();
-  var links = linkHeader.split(",");
-  for (var i = 0; i < links.length; i++) {
-    var linkParts = links[i].split(';');
-    var linkTag = RiakUtil.trim(linkParts[1]);
-    var linkTo = RiakUtil.trim(linkParts[0].replace(/Link: ?/, ''));
-    linkTo = linkTo.replace(/</, '').replace(/>/, '');
-    linkTo = linkTo.replace(/\"/g, '');
-    linkTag = linkTag.replace('riaktag=', '');
-    linkTag = linkTag.replace(/\"/g, '');
-    parsedLinks.push({tag: linkTag.toString(), target: linkTo.toString()});
+  if (linkHeader != '') {
+    var links = linkHeader.split(",");
+    for (var i = 0; i < links.length; i++) {
+      var linkParts = links[i].split(';');
+      var linkTag = RiakUtil.trim(linkParts[1]);
+      var linkTo = RiakUtil.trim(linkParts[0].replace(/Link: ?/, ''));
+      linkTo = linkTo.replace(/</, '').replace(/>/, '');
+      linkTo = linkTo.replace(/\"/g, '');
+      linkTag = linkTag.replace('riaktag=', '');
+      linkTag = linkTag.replace(/\"/g, '');
+      parsedLinks.push({tag: linkTag.toString(), target: linkTo.toString()});
+    }
   }
   this.links = parsedLinks;
 };
@@ -398,14 +411,16 @@ RiakObject.prototype.getLinkHeader = function() {
     return '';
   }
   var header = '';
-  this.links.forEach(function(link) {
-		       header = header + '<' + link.target + '>; ';
-		       if (link.tag === 'rel=up') {
-			 header = header + 'rel="up", ';
-		       }
-		       else {
-			 header = header + 'riaktag=\"' + link.tag + '\", ';
-		       } } );
+  for (var i = 0; i < this.links.length; i++) {
+      link = this.links[i];
+      header = header + '<' + link.target + '>; ';
+      if (link.tag === 'rel=up') {
+	  header = header + 'rel="up", ';
+      }
+      else {
+	  header = header + 'riaktag=\"' + link.tag + '\", ';
+      }
+  }
   header = header.replace(/\"\"/g, '\"');
   return header.replace(/,\s$/, '');
 };
@@ -559,7 +574,13 @@ RiakObject.prototype._store = function(req, callback) {
 					       req.responseText);
       var vclock = req.getResponseHeader('X-Riak-Vclock');
       var thisObject = this;
-      var siblings = siblingData.map(function(sd) { return RiakObject.fromMultipart(thisObject.bucket, thisObject.key, thisObject.client, vclock, sd); });
+        var siblings = [];
+      for (var i = 0; i < siblingData.length; i++) {
+        var sd = siblingData[i];
+        var sib = RiakObject.fromMultipart(thisObject.bucket, thisObject.key, 
+                                           thisObject.client, vclock, sd);
+        siblings.push(sib);
+      }
       callback('siblings', siblings, req);
     }
     else {
@@ -800,9 +821,13 @@ RiakBucket.prototype._handleGetObject = function(key, req, callback, createEmpty
 					       req.responseText);
       var vclock = req.getResponseHeader('X-Riak-Vclock');
       var thisBucket = this;
-      var siblings = siblingData.map(function(sd) { 
-          return RiakObject.fromMultipart(thisBucket.name, key, 
-                                          thisBucket.client, vclock, sd); });
+      var siblings = [];
+      for (var i = 0; i < siblingData.length; i++) {
+        var sd = siblingData[i];
+        var sib = RiakObject.fromMultipart(thisBucket.name, key, 
+                                           thisBucket.client, vclock, sd);
+        siblings.push(sib);
+      }
       status = 'siblings'
       object = siblings;
     }
