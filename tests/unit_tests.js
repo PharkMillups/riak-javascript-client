@@ -107,6 +107,8 @@ function deleteObject() {
 
 function resolveSiblings() {
   stop();
+  var sib1 = "\r\nNastyHeader: trick\rSome\r\nContent\r\n";
+  var sib2 = "some other content";
   setupSiblingBucket(
     function(bucket1, req) {
       bucket1.remove('td10', function(del_success, del_req) {
@@ -114,10 +116,11 @@ function resolveSiblings() {
           function(status, object, req) {
             ok(status === 'ok', "'ok' status for object creation");
             object.contentType = 'text/plain';
-            object.body = 'Hello';
+            object.body = sib1;
             object.store(
               function(status, newObject, req) {
                 equals(status, 'ok', "Store(1) status reflects no sibling");
+                equals(newObject.body, sib1, "Store(1) has correct body"); 
                 bucket1.allowsMultiples(true);
                 bucket1.store(
                   function(multBucket, req) {
@@ -128,7 +131,7 @@ function resolveSiblings() {
                           function(status2, object2, req) {
                             ok(status2 === 'ok', "'ok' status for get after first put");
                             object2.vclock = null;
-                            object2.body = 'Goodbye';
+                            object2.body = sib2;
                             object2.store(
                               function(status3, siblings, req) {
                                 equals(status3, 'siblings', "Store(2) status reflects sibling creation");
@@ -137,6 +140,9 @@ function resolveSiblings() {
                                   function(status4, get_siblings, req) {
                                     equals(status4, 'siblings', "Get status reflects sibling creation");
                                     equals(get_siblings.length, 2, "2 siblings returned by get_or_new()");
+                                    var got_bodies = [get_siblings[0].body, get_siblings[1].body];
+                                    var exp_bodies = [sib1, sib2];
+                                    same(got_bodies.sort(), exp_bodies.sort(), "2 siblings have correct bodies")
                                     siblings[0].store(
                                       function(status5, finalObj, req) {
                                         equals(status5, 'ok', 'Final sibling stored');
@@ -325,7 +331,7 @@ function runTests() {
   test("Store", 3, storeMissingObject);
   test("Create", 2, createMissingObject);
   test("Update", 4, updateObject);
-  test("Siblings", 9, resolveSiblings);
+  test("Siblings", 11, resolveSiblings);
   test("Delete", 2, deleteObject);
   test("Get Missing", 2, lookupMissingObject);
 
